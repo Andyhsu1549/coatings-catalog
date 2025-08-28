@@ -1,328 +1,261 @@
-# app.py  (塗料 / 工業地坪 Catalog)
 import streamlit as st
 import pandas as pd
-from io import BytesIO
-from PIL import Image
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import mm
-from reportlab.lib.utils import ImageReader
-import os, math, datetime as dt
+from io import StringIO
+from datetime import datetime
 
-# =====================
-# 基本設定 & 多語字典
-# =====================
-st.set_page_config(page_title="Coatings & Flooring Catalog", layout="wide")
+st.set_page_config(page_title="Streamlit 商業原型（投資人版＋型錄生成）", page_icon="⚡", layout="wide")
 
-TEXT = {
-    "lang": {"中文": "語言 / Language", "English": "Language / 語言"},
-    "title": {"中文": "For 意慧女士 | 塗料｜工業地坪 產品型錄 Demo", "English": "Coatings & Industrial Flooring Catalog Demo"},
-    "caption": {
-        "中文": "Excel 駆動：搜尋/篩選、批次更新（Upsert）、PDF 匯出、與中英文切換。",
-        "English": "Excel-driven: search/filter, batch upsert, PDF export, with bilingual UI."
-    },
-    "filters": {"中文": "篩選條件", "English": "Filters"},
-    "search": {"中文": "關鍵字（系列/型號/說明/性能）", "English": "Search (Series/Model/Spec/Performance)"},
-    "series": {"中文": "系列", "English": "Series"},
-    "resin": {"中文": "成分", "English": "Composition"},
-    "thick": {"中文": "厚度", "English": "Thickness"},
-    "method": {"中文": "施工方式", "English": "Application Method"},
-    "env": {"中文": "適用環境", "English": "Applications"},
-    "cert": {"中文": "認證", "English": "Certifications"},
-    "color": {"中文": "顏色", "English": "Color"},
-    "more": {"中文": "更多選項", "English": "More Options"},
-    "view": {"中文": "顯示模式", "English": "View Mode"},
-    "view_all": {"中文": "全部產品", "English": "All Products"},
-    "view_new": {"中文": "僅顯示新增的", "English": "Only New"},
-    "view_upd": {"中文": "僅顯示更新過的", "English": "Only Updated"},
-    "list": {"中文": "產品列表（{n} 筆）", "English": "Product List ({n} items)"},
-    "model": {"中文": "型號", "English": "Model"},
-    "spec": {"中文": "規格說明", "English": "Specification"},
-    "perf": {"中文": "性能指標", "English": "Performance"},
-    "img_fail": {"中文": "測試", "English": "TEST"},
-    "export": {"中文": "輸出 PDF", "English": "Export PDF"},
-    "export_desc": {"中文": "將目前篩選後的清單輸出為產品型錄 PDF。", "English": "Export the filtered list as a catalog PDF."},
-    "gen_pdf": {"中文": "產生 PDF", "English": "Generate PDF"},
-    "dl_pdf": {"中文": "下載 產品型錄.pdf", "English": "Download Catalog.pdf"},
-    "pdf_h1": {"中文": "塗料 / 工業地坪 產品型錄", "English": "Coatings & Industrial Flooring Catalog"},
-    "pdf_h2": {"中文": "（內容由 Excel 匯入，可即時更新）", "English": "(Content imported from Excel, updates in real time)"},
-    "no_img": {"中文": "無圖片", "English": "No Image"},
-    "upsert": {"中文": "批次更新 / 新增 (Upsert)", "English": "Batch Update / Insert (Upsert)"},
-    "up_exp": {"中文": "上傳更新檔 → 預覽差異 → 套用", "English": "Upload Update File → Preview Diff → Apply"},
-    "up_ul": {
-        "中文": "上傳更新 Excel（需欄位：系列、型號、顏色、成分、厚度、施工方式、性能指標、適用環境、認證、規格說明、圖片路徑）",
-        "English": "Upload update Excel (columns required: Series, Model, Color, Composition, Thickness, Method, Performance, Applications, Certifications, Spec, ImagePath)"
-    },
-    "miss": {"中文": "更新檔缺少欄位：", "English": "Missing columns in update file: "},
-    "diff": {"中文": "🆕 新增：{a} 筆，✏️ 變更：{b} 筆，✅ 相同：{c} 筆",
-             "English": "🆕 New: {a}  | ✏️ Updated: {b}  | ✅ Unchanged: {c}"},
-    "apply": {"中文": "套用更新", "English": "Apply Update"},
-    "bak": {"中文": "已自動備份：", "English": "Backup created: "},
-    "ok": {"中文": "更新完成！重新整理頁面即可查看最新清單。", "English": "Update completed! Refresh to see the latest list."},
-    "notfound": {"中文": "找不到 {f}，已自動建立樣板。", "English": "Cannot find {f}. A sample sheet has been created."}
-}
-def T(k, lang): return TEXT[k][lang]
+# =========================
+# 假資料 & 商業邏輯（共用）
+# =========================
+KPI_ROWS = [
+    {"metric": "交期達成率", "value": 95, "delta": "+2%"},
+    {"metric": "一次合格率", "value": 98, "delta": "+1%"},
+    {"metric": "整體毛利率", "value": 31, "delta": "+3%"},
+]
+TREND = pd.DataFrame({
+    "month": pd.date_range("2024-01-01", periods=8, freq="M"),
+    "on_time_rate": [88, 90, 92, 91, 93, 94, 95, 96],
+})
+PRICE_RULES = pd.DataFrame([
+    {"product":"A100", "base_price":1000, "addon_fast":150, "addon_premium":200, "lead_days":7},
+    {"product":"B200", "base_price":1800, "addon_fast":200, "addon_premium":300, "lead_days":10},
+    {"product":"C300", "base_price":2500, "addon_fast":250, "addon_premium":500, "lead_days":14},
+])
 
-# 語言選擇
-lang = st.sidebar.selectbox(T("lang", "中文"), ["中文", "English"], index=0)
-st.title(T("title", lang))
-st.caption(T("caption", lang))
+@st.cache_data(show_spinner=False)
+def list_products():
+    return PRICE_RULES["product"].tolist()
 
-# =====================
-# 基礎設定
-# =====================
-DEFAULT_EXCEL = "coatings_example.xlsx"
-REQ = ["系列","型號","顏色","成分","厚度","施工方式","性能指標","適用環境","認證","規格說明","圖片路徑"]
+def calc_quote(product:str, qty:int, use_fast:bool, use_premium:bool, discount:int):
+    row = PRICE_RULES[PRICE_RULES["product"]==product].iloc[0]
+    unit = row["base_price"] + (row["addon_fast"] if use_fast else 0) + (row["addon_premium"] if use_premium else 0)
+    subtotal = unit * qty
+    discount_amt = subtotal * (discount/100)
+    total = subtotal - discount_amt
+    lead = row["lead_days"] - (2 if use_fast else 0) + (1 if use_premium else 0)  # 示意規則
+    est_margin = 0.28 + (0.03 if use_premium else 0) - (0.01 if discount>=10 else 0)
+    return {
+        "unit": unit,
+        "subtotal": subtotal,
+        "discount_amt": discount_amt,
+        "total": total,
+        "lead": max(1, lead),
+        "margin": est_margin
+    }
 
-def load_excel(p): return pd.read_excel(p).fillna("")
-def save_excel(df, p): df.to_excel(p, index=False)
-def backup_excel(p):
-    ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    bak = p.replace(".xlsx", f"_{ts}.xlsx")
-    os.replace(p, bak); return bak
-def normalize_key(s): return str(s).strip().lower()
+def df_to_csv_bytes(df: pd.DataFrame) -> bytes:
+    buff = StringIO()
+    df.to_csv(buff, index=False)
+    return buff.getvalue().encode("utf-8")
 
-# 若不存在就自動建立
-def ensure_excel(p):
-    if os.path.exists(p):
-        return load_excel(p)
-    os.makedirs("images", exist_ok=True)
-    sample = pd.DataFrame([
-        ["環氧樹脂","EPX-1000","綠色","Epoxy","2mm","自流平","抗壓≥80MPa; 耐酸/鹼; 耐磨耗","停車場, 工廠","RoHS","標準耐磨型地坪","images/epx_1000.png"],
-        ["PU 耐磨","PU-2000","灰色","PU","3mm","鏝抹","耐磨耗<0.03g; 耐油污","食品加工, 醫療","REACH","耐磨耐化學型","images/pu_2000.png"],
-        ["導電防靜電","ESD-3000","黑色","Epoxy","2mm","滾塗","表面電阻 10^6 Ω; 抗塵","電子廠, 無塵室","抗菌報告","導電防靜電地坪","images/esd_3000.png"],
-        ["快速固化","MMA-4000","藍色","MMA","4mm","自流平","低溫施工; 2小時通車","冷凍庫, 室外","—","甲基丙烯酸甲酯快速固化","images/mma_4000.png"],
-    ], columns=REQ)
-    save_excel(sample, p)
-    st.info(T("notfound", lang).format(f=p))
-    return sample
+def make_catalog_markdown(df: pd.DataFrame, currency: str) -> bytes:
+    """把產品表轉成簡單 Markdown 型錄（每品一段）。"""
+    lines = ["# 產品型錄", f"_生成時間：{datetime.now().isoformat(timespec='seconds')}_", ""]
+    for _, r in df.iterrows():
+        attrs = (str(r.get("key_features","")) or "").split(";")
+        bullets = "\n".join([f"- {a.strip()}" for a in attrs if a.strip()][:5])
+        img = str(r.get("image_url","")).strip()
+        if img:
+            lines.append(f"![{r['name']}]({img})")
+        lines += [
+            f"## {r['sku']}｜{r['name']}",
+            f"**售價**：{currency} {r['price_selling']}",
+            bullets if bullets else "- （待補關鍵賣點）",
+            "",
+            str(r.get("description","")).strip(),
+            ""
+        ]
+    return "\n".join(lines).encode("utf-8")
 
-df = ensure_excel(DEFAULT_EXCEL)
+# =========================
+# 側邊欄（選單切換）
+# =========================
+# 側邊欄（選單切換）
+st.sidebar.title("功能")
+menu = st.sidebar.selectbox("選單", ["儀表板＋報價", "資料整合／型錄自動化"], index=0)
 
-# 初始化 upsert 狀態
-if "upsert_new" not in st.session_state: st.session_state.upsert_new = []
-if "upsert_update" not in st.session_state: st.session_state.upsert_update = []
 
-# =====================
-# 側邊欄：搜尋 + 篩選 + 顯示模式
-# =====================
-with st.sidebar:
-    st.header(T("filters", lang))
-    q = st.text_input(T("search", lang))
+# ============= 子頁 1：儀表板＋報價 =============
+if menu == "儀表板＋報價":
+    st.title("⚡ Streamlit 商業原型（投資人版：一頁三區塊）")
+    st.caption("看得到價值、摸得到功能、想得到擴張。")
+    st.toast("供應商 A 出現交期風險，已切換快速產線（示意）", icon="⚠️")
 
-    def ms(col, label_key):
-        if col in df.columns and not df.empty:
-            opts = sorted([x for x in df[col].astype(str).unique().tolist() if x])
-            return st.multiselect(T(label_key, lang), opts)
-        return []
+    # 區塊 1：KPI
+    st.subheader("1) KPI 快照")
+    c1, c2, c3 = st.columns(3)
+    for col, row in zip([c1,c2,c3], KPI_ROWS):
+        col.metric(row["metric"], row["value"], row["delta"])
+    st.line_chart(TREND.set_index("month"), y="on_time_rate", height=240)
+    with st.expander("這代表什麼？", expanded=False):
+        st.markdown(
+            "- 即時把分散的 Excel/DB 數據變成決策畫面\n"
+            "- `st.metric` 與 `st.line_chart` 幾行就能完成\n"
+            "- 這就是我們**交付速度**的來源"
+        )
+    st.divider()
 
-    ser_f = ms("系列", "series")
-    res_f = ms("成分", "resin")
-    thk_f = ms("厚度", "thick")
-    mtd_f = ms("施工方式", "method")
-    env_f = ms("適用環境", "env")
-    crt_f = ms("認證", "cert")
-    col_f = ms("顏色", "color")
+    # 區塊 2：報價引擎
+    st.subheader("2) 關鍵流程：報價引擎（核心邏輯 + 交付輸出）")
+    with st.form("quote", clear_on_submit=False):
+        left, right = st.columns(2)
+        with left:
+            product = st.selectbox("產品型號", list_products(), index=0)
+            qty = st.number_input("數量", value=100, min_value=1, step=10)
+            discount = st.slider("折扣（%）", 0, 30, value=5)
+        with right:
+            use_fast = st.checkbox("快速交期（+費用，-2 天）", value=True)
+            use_premium = st.checkbox("高階版（+功能，毛利↑）", value=False)
+            customer = st.text_input("客戶名稱", value="範例股份有限公司")
+        submitted = st.form_submit_button("計算報價")
 
-    st.markdown("---")
-    view_opt = [T("view_all", lang), T("view_new", lang), T("view_upd", lang)]
-    view_mode = st.selectbox(T("view", lang), view_opt, index=0)
+    if submitted:
+        with st.spinner("計算中…"):
+            res = calc_quote(product, qty, use_fast, use_premium, discount)
 
-# 基礎篩選
-filtered = df.copy()
-if not df.empty and q:
-    ql = q.lower()
-    filtered = filtered[filtered.apply(lambda r: ql in (" ".join(r.astype(str).values)).lower(), axis=1)]
-def apply_val(col, vals):
-    global filtered
-    if vals and col in filtered.columns:
-        filtered = filtered[filtered[col].astype(str).isin(vals)]
-for col, vals in [
-    ("系列", ser_f), ("成分", res_f), ("厚度", thk_f), ("施工方式", mtd_f),
-    ("適用環境", env_f), ("認證", crt_f), ("顏色", col_f)
-]: apply_val(col, vals)
+        m1, m2, m3 = st.columns(3)
+        m1.metric("單價", f"${res['unit']:.0f}")
+        m2.metric("總價(未稅)", f"${res['total']:.0f}", delta=f"-{res['discount_amt']:.0f} 折扣")
+        m3.metric("交期(天)", res["lead"])
+        st.progress(int(res["margin"]*100), text=f"毛利率估：{res['margin']*100:.1f}%")
 
-# 顯示模式（接 Upsert）
-if view_mode == T("view_new", lang) and st.session_state.upsert_new:
-    filtered = filtered[filtered["型號"].isin(st.session_state.upsert_new)]
-elif view_mode == T("view_upd", lang) and st.session_state.upsert_update:
-    filtered = filtered[filtered["型號"].isin(st.session_state.upsert_update)]
+        df_quote = pd.DataFrame([{
+            "date": datetime.now().date().isoformat(),
+            "customer": customer,
+            "product": product,
+            "qty": qty,
+            "unit_price": int(res["unit"]),
+            "subtotal": int(res["subtotal"]),
+            "discount_pct": discount,
+            "discount_amt": int(res["discount_amt"]),
+            "total": int(res["total"]),
+            "lead_days": res["lead"]
+        }])
+        st.dataframe(df_quote, use_container_width=True, height=120)
+        st.download_button(
+            "下載報價（CSV）",
+            data=df_to_csv_bytes(df_quote),
+            file_name=f"quote_{customer}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
 
-st.subheader(T("list", lang).format(n=len(filtered)))
+    st.divider()
+    st.subheader("3) 落地與擴張（能不能長大？）")
+    with st.expander("技術路線（投資人關心的三件事）", expanded=True):
+        st.markdown(
+            """
+- **權限/SSO**：反向代理或 Auth0；密鑰以 `secrets.toml` 管理
+- **資料庫**：Postgres/MySQL/Snowflake；`st.cache_data` 快取昂貴查詢
+- **長任務**：Celery / Cloud Tasks；前端 `st.status` + 輪詢顯示進度
+            """
+        )
+    st.caption("※ Demo 數據與規則，用於展示從『流程 → 產品化』的速度與可擴性。")
 
-# =====================
-# 卡片式展示
-# =====================
-cols_per_row = 3
-rows = math.ceil(len(filtered) / cols_per_row) if len(filtered) else 0
-records = filtered.to_dict(orient="records") if len(filtered) else []
+# ============= 子頁 2：資料整合／型錄自動化 =============
+elif menu == "資料整合／型錄自動化":
+    st.title("📚 資料讀取整合 ＆ 型錄自動化生成（示例）")
+    st.caption("把 Excel/CSV 里的產品表，1 分鐘生成『價格＋賣點』型錄供銷售使用。")
 
-def label_pair(key, val):
-    if lang == "中文":
-        return f"**{key}**：{val}"
-    mapping = {"系列":"Series","型號":"Model","顏色":"Color","成分":"Composition","厚度":"Thickness",
-               "施工方式":"Method","性能指標":"Performance","適用環境":"Applications","認證":"Certifications",
-               "規格說明":"Specification"}
-    return f"**{mapping.get(key, key)}**: {val}"
+    # 資料來源：上傳或貼上
+    st.subheader("A. 匯入資料")
+    col_u1, col_u2 = st.columns([2,1])
+    with col_u1:
+        up = st.file_uploader("上傳 CSV（UTF-8）", type=["csv"])
+        st.caption("欄位建議：sku, name, description, base_price, key_features（以分號 ; 分隔）, image_url（可選）")
+    with col_u2:
+        if st.button("下載範例 CSV"):
+            sample = pd.DataFrame([
+                {"sku":"TX-100", "name":"機能紡織布A", "description":"透氣、耐磨，適用戶外機能服。",
+                 "base_price": 280, "key_features":"透氣;快乾;耐磨", "image_url":""},
+                {"sku":"TX-220", "name":"抗菌銀離子布", "description":"長效抗菌，貼身衣物適用。",
+                 "base_price": 360, "key_features":"抗菌;親膚;可水洗", "image_url":""},
+            ])
+            st.download_button("範例 CSV 下載", data=df_to_csv_bytes(sample),
+                               file_name="catalog_sample.csv", mime="text/csv")
 
-for i in range(rows):
-    row_cards = records[i*cols_per_row:(i+1)*cols_per_row]
-    cols = st.columns(cols_per_row)
-    for col, item in zip(cols, row_cards):
-        with col:
-            img_path = str(item.get("圖片路徑", ""))
-            try:
-                st.image(img_path, use_container_width=True)
-            except Exception:
-                st.image(Image.new("RGB",(600,400),(230,230,230)),
-                         use_container_width=True, caption=T("img_fail", lang))
-
-            for f in ["系列","型號","顏色","成分","厚度","施工方式","性能指標","適用環境","認證","規格說明"]:
-                v = str(item.get(f, "")).strip()
-                if v:
-                    st.markdown(label_pair(f, v), unsafe_allow_html=True)
-
-st.divider()
-
-# =====================
-# PDF 匯出（多語）
-# =====================
-def make_catalog_pdf(items, lang_sel):
-    buf = BytesIO()
-    c = canvas.Canvas(buf, pagesize=A4)
-    W, H = A4
-    margin = 15*mm
-
-    def header():
-        c.setFont("Helvetica-Bold", 14)
-        c.drawString(margin, H - margin + 2*mm, TEXT["pdf_h1"][lang_sel])
-        c.setFont("Helvetica", 9)
-        c.drawString(margin, H - margin - 3*mm, TEXT["pdf_h2"][lang_sel])
-        c.line(margin, H - margin - 5*mm, W - margin, H - margin - 5*mm)
-
-    header()
-    y = H - margin - 12*mm
-    img_max_w, img_max_h = 70*mm, 42*mm
-    line_gap = 6*mm
-
-    cap = {
-        "中文": {"Series":"系列","Model":"型號","Color":"顏色","Composition":"成分","Thickness":"厚度",
-                 "Method":"施工方式","Performance":"性能指標","Applications":"適用環境","Cert":"認證","Spec":"規格說明"},
-        "English": {"Series":"Series","Model":"Model","Color":"Color","Composition":"Composition","Thickness":"Thickness",
-                    "Method":"Method","Performance":"Performance","Applications":"Applications","Cert":"Certifications","Spec":"Specification"}
-    }[lang_sel]
-
-    for it in items:
-        if y < margin + img_max_h + 32*mm:
-            c.showPage(); header(); y = H - margin - 12*mm
-
-        # 圖片
-        img_path = str(it.get("圖片路徑",""))
-        img_reader = None
-        if os.path.exists(img_path):
-            try:
-                img_reader = ImageReader(img_path)
-                iw, ih = Image.open(img_path).size
-                s = min(img_max_w/iw, img_max_h/ih)
-                dw, dh = iw*s, ih*s
-                c.drawImage(img_reader, margin, y - dh, width=dw, height=dh, preserveAspectRatio=True, mask='auto')
-            except Exception:
-                img_reader = None
-        if not img_reader:
-            c.rect(margin, y - img_max_h, img_max_w, img_max_h)
-            c.setFont("Helvetica", 8)
-            c.drawCentredString(margin + img_max_w/2, y - img_max_h/2, TEXT["no_img"][lang_sel])
-
-        # 文字
-        tx = margin + img_max_w + 10*mm
-        c.setFont("Helvetica-Bold", 12)
-        c.drawString(tx, y, f"{cap['Model']}: {it.get('型號','')}")
-        c.setFont("Helvetica", 10)
-        liney = y - 14
-
-        def draw(label, key):
-            nonlocal liney
-            val = str(it.get(key, "")).strip()
-            if val:
-                c.drawString(tx, liney, f"{label}: {val}")
-                liney -= 12
-
-        draw(cap["Series"], "系列")
-        draw(cap["Color"], "顏色")
-        draw(cap["Composition"], "成分")
-        draw(cap["Thickness"], "厚度")
-        draw(cap["Method"], "施工方式")
-        draw(cap["Performance"], "性能指標")
-        draw(cap["Applications"], "適用環境")
-        draw(cap["Cert"], "認證")
-        draw(cap["Spec"], "規格說明")
-
-        y = liney - line_gap
-
-    c.save(); buf.seek(0); return buf
-
-st.subheader(T("export", lang))
-st.write(T("export_desc", lang))
-if st.button(T("gen_pdf", lang)):
-    pdf = make_catalog_pdf(filtered.to_dict(orient="records"), lang)
-    st.download_button(T("dl_pdf", lang), data=pdf,
-                       file_name=("產品型錄.pdf" if lang=="中文" else "Catalog.pdf"),
-                       mime="application/pdf")
-
-st.divider()
-
-# =====================
-# 批次更新 / 新增 (Upsert)
-# =====================
-st.subheader(T("upsert", lang))
-with st.expander(T("up_exp", lang), expanded=False):
-    up = st.file_uploader(T("up_ul", lang), type=["xlsx"])
+    df_raw = None
     if up:
-        df_up = pd.read_excel(up).fillna("")
-        miss = set(REQ) - set(df_up.columns)
-        if miss:
-            st.error(T("miss", lang) + "、".join(miss))
-        else:
-            # 唯一鍵：系列+型號
-            if not df.empty:
-                df["_key"] = (df["系列"].astype(str) + "|" + df["型號"].astype(str)).map(normalize_key)
-            else:
-                df["_key"] = []
-            df_up["_key"] = (df_up["系列"].astype(str) + "|" + df_up["型號"].astype(str)).map(normalize_key)
+        try:
+            df_raw = pd.read_csv(up)
+        except Exception as e:
+            st.error(f"CSV 讀取失敗：{e}")
 
-            key_m = set(df["_key"].tolist()) if len(df) else set()
-            key_u = set(df_up["_key"].tolist())
+    st.subheader("B. 規則與整合（售價計算 / 欄位校驗）")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        markup_pct = st.slider("加價率（%）", 0, 100, 25)
+    with c2:
+        currency = st.selectbox("幣別", ["NT$", "USD$", "RMB¥"], index=0)
+    with c3:
+        round_to = st.selectbox("售價進位", ["1", "10", "50", "100"], index=1)
 
-            to_insert = key_u - key_m
-            to_check  = key_u & key_m
+    # 若沒有上傳，用內建範例
+    if df_raw is None:
+        st.info("未上傳檔案，使用內建範例。")
+        df_raw = pd.DataFrame([
+            {"sku":"TX-100", "name":"機能紡織布A", "description":"透氣、耐磨，適用戶外機能服。",
+             "base_price": 280, "key_features":"透氣;快乾;耐磨", "image_url":""},
+            {"sku":"TX-220", "name":"抗菌銀離子布", "description":"長效抗菌，貼身衣物適用。",
+             "base_price": 360, "key_features":"抗菌;親膚;可水洗", "image_url":""},
+        ])
 
-            updates, same = [], []
-            for k in to_check:
-                row_m = df.loc[df["_key"]==k, REQ].iloc[0]
-                row_u = df_up.loc[df_up["_key"]==k, REQ].iloc[0]
-                if any(str(row_m[c]) != str(row_u[c]) for c in REQ):
-                    updates.append(k)
-                else:
-                    same.append(k)
+    # 欄位檢查
+    required_cols = ["sku","name","base_price"]
+    missing = [c for c in required_cols if c not in df_raw.columns]
+    if missing:
+        st.error(f"缺少必要欄位：{missing}")
+    else:
+        # 計算售價
+        df = df_raw.copy()
+        df["base_price"] = pd.to_numeric(df["base_price"], errors="coerce").fillna(0)
+        df["price_selling"] = (df["base_price"] * (1 + markup_pct/100.0)).round(0)
+        step = int(round_to)
+        if step > 1:
+            df["price_selling"] = (df["price_selling"] / step).round(0) * step
 
-            st.write(T("diff", lang).format(a=len(to_insert), b=len(updates), c=len(same)))
-            st.session_state.upsert_new = df_up[df_up["_key"].isin(to_insert)]["型號"].tolist()
-            st.session_state.upsert_update = df_up[df_up["_key"].isin(updates)]["型號"].tolist()
+        # 洗出前三個賣點
+        def top3_feats(x):
+            parts = str(x).split(";")
+            return "; ".join([p.strip() for p in parts if p.strip()][:3])
+        df["top_features"] = df["key_features"].apply(top3_feats) if "key_features" in df.columns else ""
 
-            if st.button(T("apply", lang), type="primary"):
-                if os.path.exists(DEFAULT_EXCEL):
-                    bak = backup_excel(DEFAULT_EXCEL)
-                    st.info(T("bak", lang) + bak)
+        # 展示整合後資料
+        st.subheader("C. 預覽整合後資料")
+        view = df[["sku","name","price_selling","top_features"] + 
+                  ([c for c in ["description","image_url"] if c in df.columns])]
+        st.dataframe(view.rename(columns={"price_selling":"售價", "top_features":"關鍵賣點"}),
+                     use_container_width=True, height=240)
 
-                if len(df):
-                    base = df.set_index("_key")
-                else:
-                    base = pd.DataFrame(columns=REQ + ["_key"]).set_index("_key")
+        # 下載：CSV / Markdown 型錄
+        st.subheader("D. 生成與下載")
+        cdl1, cdl2 = st.columns(2)
+        with cdl1:
+            st.download_button("下載整合後資料（CSV）",
+                               data=df_to_csv_bytes(view),
+                               file_name="catalog_integrated.csv",
+                               mime="text/csv",
+                               use_container_width=True)
+        with cdl2:
+            md_bytes = make_catalog_markdown(
+                df.assign(price_selling=df["price_selling"].astype(int)),
+                currency=currency
+            )
+            st.download_button("下載 Markdown 型錄（.md）",
+                               data=md_bytes,
+                               file_name="catalog.md",
+                               mime="text/markdown",
+                               use_container_width=True)
 
-                for _, r in df_up.iterrows():
-                    base.loc[r["_key"], REQ] = r[REQ]
+        with st.expander("這頁面展示了什麼整合能力？", expanded=False):
+            st.markdown(
+                "- **資料讀取**：CSV 上傳（也可改為資料庫/Google Sheet）\n"
+                "- **規則引擎**：依加價率與進位規則計算售價\n"
+                "- **特徵萃取**：把 `key_features` 轉成前 3 個賣點\n"
+                "- **輸出**：一鍵下載整合 CSV，或輸出 Markdown 型錄"
+            )
 
-                out = base.reset_index()[REQ].fillna("")
-                out.sort_values(by=["系列","型號"], inplace=True)
-                save_excel(out, DEFAULT_EXCEL)
-                st.success(T("ok", lang))
+# ============ 底部說明 ============
+st.sidebar.markdown("---")
+st.sidebar.caption("Demo 數據僅供展示流程 → 產品化的速度與可擴性。")
